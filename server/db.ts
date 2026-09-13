@@ -5,7 +5,10 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export const DATA_DIR = path.resolve(__dirname, "..", "data");
+// Trên Vercel, filesystem chỉ ghi được vào /tmp (không bền vững giữa các lần cold start).
+export const DATA_DIR = process.env.VERCEL
+  ? "/tmp/data"
+  : path.resolve(__dirname, "..", "data");
 export const PRODUCTS_FILE = path.join(DATA_DIR, "products.json");
 
 export type Product = {
