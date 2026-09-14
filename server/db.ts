@@ -1,22 +1,18 @@
-import { promises as fs } from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+import { getDb } from "./firebase.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const COLLECTION = "products";
 
-// Trên Vercel, filesystem chỉ ghi được vào /tmp (không bền vững giữa các lần cold start).
-export const DATA_DIR = process.env.VERCEL
-  ? "/tmp/data"
-  : path.resolve(__dirname, "..", "data");
-export const PRODUCTS_FILE = path.join(DATA_DIR, "products.json");
+// Firestore giới hạn ~1MB/document. Ảnh lưu base64 ngay trong document nên
+// phải giới hạn chặt hơn giới hạn phía client (2MB) để có chỗ cho base64
+// (~4/3 kích thước gốc) cộng các trường khác.
+const MAX_IMAGE_BASE64_BYTES = 700 * 1024;
 
 export type Product = {
   id: string;
   name: string;
   /** Mã sản phẩm (NO). */
   code: string;
-  /** Data URL (base64) của ảnh sản phẩm; rỗng nghĩa là chưa có ảnh. */
+  /** Data URL (base64) của ảnh sản phẩm, lưu trực tiếp trong Firestore; rỗng nghĩa là chưa có ảnh. */
   image: string;
   /** Giá bán. */
   priceVnd: string;
@@ -28,98 +24,97 @@ export type Product = {
   createdAt: string;
 };
 
-async function ensureDataFile(): Promise<void> {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  try {
-    await fs.access(PRODUCTS_FILE);
-  } catch {
-    await fs.writeFile(PRODUCTS_FILE, "[]", "utf-8");
+type ProductDoc = Omit<Product, "id">;
+
+export class ImageTooLargeError extends Error {
+  constructor() {
+    super("Ảnh quá lớn để lưu (tối đa ~500KB). Hãy chọn ảnh nhỏ hơn hoặc nén lại.");
+    this.name = "ImageTooLargeError";
   }
 }
 
-// Ghi tuần tự để tránh hai request ghi đè lẫn nhau khi đọc-sửa-ghi file JSON.
-let writeQueue: Promise<unknown> = Promise.resolve();
-
-function enqueue<T>(task: () => Promise<T>): Promise<T> {
-  const result = writeQueue.then(task);
-  writeQueue = result.catch(() => undefined);
-  return result;
-}
-
-export async function readProducts(): Promise<Product[]> {
-  await ensureDataFile();
-  const raw = await fs.readFile(PRODUCTS_FILE, "utf-8");
-  try {
-    return JSON.parse(raw) as Product[];
-  } catch {
-    return [];
+function assertImageSize(image: string): void {
+  if (image && image.startsWith("data:") && image.length > MAX_IMAGE_BASE64_BYTES) {
+    throw new ImageTooLargeError();
   }
 }
 
-async function writeProducts(products: Product[]): Promise<void> {
-  await ensureDataFile();
-  const tmpFile = `${PRODUCTS_FILE}.tmp`;
-  await fs.writeFile(tmpFile, JSON.stringify(products, null, 2), "utf-8");
-  await fs.rename(tmpFile, PRODUCTS_FILE);
+function toProduct(id: string, data: FirebaseFirestore.DocumentData): Product {
+  return {
+    id,
+    name: data.name ?? "",
+    code: data.code ?? "",
+    image: data.image ?? "",
+    priceVnd: data.priceVnd ?? "",
+    originalPrice: data.originalPrice ?? "",
+    category: data.category ?? "",
+    size: data.size ?? "",
+    updated: data.updated ?? "",
+    createdAt: data.createdAt ?? "",
+  };
 }
 
-export function listProducts(): Promise<Product[]> {
-  return enqueue(() => readProducts());
+export async function listProducts(): Promise<Product[]> {
+  const snapshot = await getDb().collection(COLLECTION).orderBy("createdAt", "desc").get();
+  return snapshot.docs.map((doc) => toProduct(doc.id, doc.data()));
 }
 
-export function getProduct(id: string): Promise<Product | undefined> {
-  return enqueue(async () => {
-    const products = await readProducts();
-    return products.find((p) => p.id === id);
-  });
+export async function getProduct(id: string): Promise<Product | undefined> {
+  const doc = await getDb().collection(COLLECTION).doc(id).get();
+  if (!doc.exists) return undefined;
+  return toProduct(doc.id, doc.data()!);
 }
 
-export function createProduct(
+export async function createProduct(
   input: Omit<Product, "id" | "updated" | "createdAt">,
 ): Promise<Product> {
-  return enqueue(async () => {
-    const products = await readProducts();
-    const now = new Date().toISOString();
-    const product: Product = {
-      ...input,
-      id: `p-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
-      updated: now,
-      createdAt: now,
-    };
-    products.unshift(product);
-    await writeProducts(products);
-    return product;
-  });
+  assertImageSize(input.image);
+
+  const db = getDb();
+  const ref = db.collection(COLLECTION).doc();
+  const now = new Date().toISOString();
+
+  const doc: ProductDoc = {
+    ...input,
+    updated: now,
+    createdAt: now,
+  };
+  await ref.set(doc);
+  return { id: ref.id, ...doc };
 }
 
-export function updateProduct(
+export async function updateProduct(
   id: string,
   input: Partial<Omit<Product, "id" | "createdAt">>,
 ): Promise<Product | undefined> {
-  return enqueue(async () => {
-    const products = await readProducts();
-    const index = products.findIndex((p) => p.id === id);
-    if (index === -1) return undefined;
+  if (input.image !== undefined) assertImageSize(input.image);
 
-    const updated: Product = {
-      ...products[index],
-      ...input,
-      id: products[index].id,
-      createdAt: products[index].createdAt,
-      updated: new Date().toISOString(),
-    };
-    products[index] = updated;
-    await writeProducts(products);
-    return updated;
-  });
+  const ref = getDb().collection(COLLECTION).doc(id);
+  const existing = await ref.get();
+  if (!existing.exists) return undefined;
+
+  const current = toProduct(existing.id, existing.data()!);
+
+  const updated: ProductDoc = {
+    name: input.name ?? current.name,
+    code: input.code ?? current.code,
+    image: input.image ?? current.image,
+    priceVnd: input.priceVnd ?? current.priceVnd,
+    originalPrice: input.originalPrice ?? current.originalPrice,
+    category: input.category ?? current.category,
+    size: input.size ?? current.size,
+    createdAt: current.createdAt,
+    updated: new Date().toISOString(),
+  };
+
+  await ref.set(updated);
+  return { id, ...updated };
 }
 
-export function deleteProduct(id: string): Promise<boolean> {
-  return enqueue(async () => {
-    const products = await readProducts();
-    const next = products.filter((p) => p.id !== id);
-    if (next.length === products.length) return false;
-    await writeProducts(next);
-    return true;
-  });
+export async function deleteProduct(id: string): Promise<boolean> {
+  const ref = getDb().collection(COLLECTION).doc(id);
+  const existing = await ref.get();
+  if (!existing.exists) return false;
+  await ref.delete();
+  return true;
 }

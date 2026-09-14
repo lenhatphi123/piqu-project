@@ -41,8 +41,12 @@ function BrandMark({ size = 34 }: { size?: number }) {
   );
 }
 
-/** Giới hạn dung lượng ảnh tải lên (ảnh được nhúng thẳng vào state dưới dạng data URL). */
-const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+/**
+ * Giới hạn dung lượng ảnh tải lên (ảnh được nhúng thẳng vào state dưới dạng data URL).
+ * Ảnh lưu base64 trực tiếp trong document Firestore (giới hạn ~1MB/document),
+ * nên phải giữ nhỏ hơn nhiều so với giới hạn đó.
+ */
+const MAX_IMAGE_BYTES = 500 * 1024;
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"];
 
 const readFileAsDataUrl = (file: File) =>
@@ -173,8 +177,8 @@ export default function Home() {
       return;
     }
     if (file.size > MAX_IMAGE_BYTES) {
-      const mb = (file.size / 1024 / 1024).toFixed(1);
-      setImageError(`Ảnh ${mb}MB vượt giới hạn 2MB. Hãy chọn ảnh nhỏ hơn.`);
+      const kb = Math.round(file.size / 1024);
+      setImageError(`Ảnh ${kb}KB vượt giới hạn 500KB. Hãy chọn ảnh nhỏ hơn.`);
       return;
     }
 
@@ -457,7 +461,7 @@ export default function Home() {
                   <span>
                     {draft.image
                       ? "Đã chọn ảnh. Bạn có thể đổi ảnh khác hoặc xóa."
-                      : "Kéo thả ảnh vào đây, hoặc chọn tệp từ máy (JPG, PNG, WEBP · tối đa 2MB)."}
+                      : "Kéo thả ảnh vào đây, hoặc chọn tệp từ máy (JPG, PNG, WEBP · tối đa 500KB)."}
                   </span>
                   {imageError && (
                     <span className="upload-error" role="alert">

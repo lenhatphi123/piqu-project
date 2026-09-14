@@ -14,6 +14,10 @@ build/
 .env.test.local
 .env.production.local
 
+# Firebase service account key (KHÔNG commit file này lên git)
+*firebase-adminsdk*.json
+serviceAccountKey.json
+
 # IDE and editor files
 .vscode/
 .idea/

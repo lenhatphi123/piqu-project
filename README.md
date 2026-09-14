@@ -4,9 +4,10 @@
 kho hàng**: danh sách sản phẩm, tìm kiếm, thêm / sửa / xóa, tải ảnh sản phẩm,
 giá VND và USD.
 
-Dữ liệu được lưu trong **file JSON** (`data/products.json`) đóng vai trò database.
-Server Express (`server/index.ts`) cung cấp API CRUD (`/api/products`) đọc/ghi
-file này, và phục vụ file tĩnh của client khi chạy production.
+Dữ liệu được lưu trên **Firebase** (Firestore cho metadata sản phẩm, Firebase
+Storage cho ảnh). Server Express (`server/index.ts`) cung cấp API CRUD
+(`/api/products`) đọc/ghi Firestore qua Firebase Admin SDK, và phục vụ file
+tĩnh của client khi chạy production.
 
 > Tính năng quét / nhận dạng sản phẩm bằng hình ảnh đã được loại bỏ. App mở ra là
 > vào thẳng màn hình kho hàng.
@@ -117,17 +118,22 @@ Trong form **Thêm / Chỉnh sửa sản phẩm** có ô **Ảnh đại diện**
 - Sau khi chọn có nút **Đổi ảnh** và **Xóa ảnh**. Sản phẩm chưa có ảnh sẽ hiện ô
   giữ chỗ kẻ sọc thay vì ảnh vỡ.
 
-Ảnh được đọc bằng `FileReader` thành data URL (base64) rồi gửi kèm trong payload
-JSON lên API (`POST`/`PUT` `/api/products`) và được lưu thẳng trong
-`data/products.json` — **không mất khi tải lại trang**.
+Ảnh được đọc bằng `FileReader` thành data URL (base64) ở client rồi gửi kèm
+trong payload JSON lên API (`POST`/`PUT` `/api/products`) như cũ. Ở phía
+server, `server/db.ts` phát hiện `image` là data URL thì **tự động upload lên
+Firebase Storage** và chỉ lưu **URL công khai** của ảnh vào Firestore (không
+lưu base64 trực tiếp — Firestore giới hạn 1MB/document). Khi sửa ảnh hoặc xóa
+sản phẩm, ảnh cũ trên Storage cũng được dọn theo.
 
 ---
 
-## 7. Dữ liệu (database dạng file JSON)
+## 7. Dữ liệu (Firebase: Firestore + Storage)
 
-Toàn bộ sản phẩm được lưu tại **`data/products.json`**. File này đóng vai trò
-database: server đọc/ghi trực tiếp vào đây cho mọi thao tác CRUD, không có
-SQL/NoSQL nào khác.
+Toàn bộ sản phẩm được lưu trên **Firestore** (collection `products`), ảnh lưu
+trên **Firebase Storage** (`server/firebase.ts`, `server/db.ts`). Server dùng
+**Firebase Admin SDK** để đọc/ghi — không còn phụ thuộc file JSON hay
+filesystem cục bộ, nên **chạy tốt trên Vercel** (trước đây filesystem `/tmp`
+trên Vercel không bền vững giữa các lần cold start, dữ liệu hay bị mất).
 
 - **API CRUD** (`server/routes.ts` + `server/db.ts`):
 
@@ -146,7 +152,7 @@ SQL/NoSQL nào khác.
     id: string;
     name: string;
     code: string;          // Mã sản phẩm (NO)
-    image: string;         // data URL base64, rỗng nếu chưa có ảnh
+    image: string;         // URL ảnh trên Firebase Storage, rỗng nếu chưa có ảnh
     priceVnd: string;      // Giá bán
     originalPrice: string; // Giá mua (giá gốc nhập vào)
     category: string;      // Một trong PRODUCT_CATEGORIES (shared/const.ts)
@@ -160,21 +166,21 @@ SQL/NoSQL nào khác.
   (`PRODUCT_CATEGORIES`): Áo, Quần, Váy, Bikini, Nón, Trang sức. Server từ chối
   giá trị lạ và tự đặt về loại đầu tiên (Áo) nếu payload gửi lên không khớp.
 
-- Ghi file được xếp hàng tuần tự (trong `server/db.ts`) để tránh hai request ghi
-  đè lên nhau, và ghi qua file `.tmp` rồi `rename` để tránh hỏng file khi ghi
-  dở dang.
-- **Sao lưu / khôi phục**: vì là 1 file JSON, chỉ cần copy `data/products.json`
-  ra nơi khác là backup xong; muốn khôi phục thì copy đè lại.
-- Đây là nguồn dữ liệu **duy nhất** của ứng dụng — không còn phụ thuộc file
-  Excel hay công cụ import nào khác. Sửa dữ liệu qua UI (thêm/sửa/xóa sản
-  phẩm) hoặc chỉnh trực tiếp file này khi server không chạy.
+- **`id` của sản phẩm** giờ là document ID do Firestore tự sinh (chuỗi ngẫu
+  nhiên), không còn dạng `p-xxxxx` như bản JSON cũ.
+- **Sao lưu / khôi phục**: dùng công cụ export/import của Firestore (Firebase
+  Console > Firestore > ⋮ > Export/Import, hoặc `gcloud firestore export`),
+  hoặc bật Point-in-time recovery trong Firebase Console.
+- Đây là nguồn dữ liệu **duy nhất** của ứng dụng. Sửa dữ liệu qua UI (thêm/sửa/
+  xóa sản phẩm) hoặc trực tiếp trong Firebase Console (Firestore Data tab).
 
 ---
 
 ## 8. Biến môi trường
 
-**App chạy được ngay mà không cần file `.env`.** Chỉ tạo `.env` khi bạn cần các
-tính năng phụ thuộc dịch vụ ngoài:
+**App chạy được UI ngay mà không cần `.env`, nhưng API sản phẩm (`/api/products`)
+bắt buộc phải cấu hình Firebase** — không có nó thì mọi request tới
+`/api/products` sẽ trả lỗi 500.
 
 ```bash
 cp .env.example .env
@@ -182,6 +188,9 @@ cp .env.example .env
 
 | Biến | Dùng cho | Thiếu thì sao |
 |---|---|---|
+| `FIREBASE_SERVICE_ACCOUNT` | Toàn bộ credential Firebase Admin dán 1 dòng JSON (khuyên dùng khi deploy Vercel) | — |
+| `FIREBASE_PROJECT_ID` / `FIREBASE_CLIENT_EMAIL` / `FIREBASE_PRIVATE_KEY` | Cách 2, tách 3 trường từ file service account (tiện khi chạy local) | — |
+| `FIREBASE_STORAGE_BUCKET` | Tên bucket Firebase Storage lưu ảnh sản phẩm | Mặc định `<project_id>.appspot.com` |
 | `VITE_FRONTEND_FORGE_API_KEY` / `VITE_FRONTEND_FORGE_API_URL` | Google Maps trong `client/src/components/Map.tsx` | Bản đồ không tải; phần còn lại vẫn chạy |
 | `VITE_OAUTH_PORTAL_URL` / `VITE_APP_ID` | Tạo URL đăng nhập OAuth (`client/src/const.ts`) | Link đăng nhập không hợp lệ |
 | `VITE_ANALYTICS_ENDPOINT` / `VITE_ANALYTICS_WEBSITE_ID` | Script Umami trong `client/index.html` | Lúc build có cảnh báo `is not defined in env variables` — vô hại |
@@ -189,7 +198,40 @@ cp .env.example .env
 | `PORT` | Cổng của server production, và cổng API khi chạy `pnpm dev:api` riêng | Mặc định 3000 (production) / 3002 (dev API) |
 
 Chỉ biến có tiền tố `VITE_` mới lộ ra phía client. Sửa `.env` xong phải khởi
-động lại dev server.
+động lại dev server (`FIREBASE_*` chỉ cần đặt 1 trong 2 cách ở trên, không cần
+cả hai).
+
+### Cách lấy Firebase Service Account key (bắt buộc)
+
+1. Vào [Firebase Console](https://console.firebase.google.com/) → chọn project
+   của bạn (project ID xem trong Project Settings, ví dụ trong ảnh cấu hình
+   web bạn có là `piqu-32b4d`).
+2. Vào **⚙️ Project Settings** → tab **Service accounts**.
+3. Bấm **Generate new private key** → xác nhận → một file `.json` sẽ được tải
+   về máy (dạng tên `<project-id>-firebase-adminsdk-xxxxx.json`).
+4. **Không commit file này lên git** (đã thêm vào `.gitignore`). Có 2 cách
+   dùng nó:
+   - **Cách A (khuyên dùng, đặc biệt khi deploy Vercel)**: mở file `.json`,
+     copy toàn bộ nội dung, dán thành **1 dòng duy nhất** vào biến
+     `FIREBASE_SERVICE_ACCOUNT` trong `.env` (hoặc trong Vercel > Project >
+     Settings > Environment Variables).
+   - **Cách B (local cho dễ đọc)**: mở file `.json`, copy 3 giá trị
+     `project_id`, `client_email`, `private_key` vào 3 biến tương ứng
+     `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`.
+     Giữ nguyên các ký tự `\n` bên trong `private_key`.
+5. Vào **Firebase Console → Storage** → bấm **Get started** nếu chưa bật
+   Storage cho project (chọn chế độ production, chọn region gần bạn). Lấy tên
+   bucket hiển thị (dạng `<project-id>.appspot.com` hoặc
+   `<project-id>.firebasestorage.app`) điền vào `FIREBASE_STORAGE_BUCKET` nếu
+   khác mặc định.
+6. Vào **Firebase Console → Firestore Database** → bấm **Create database**
+   nếu chưa có (chọn chế độ **Production**, chọn region). Không cần tạo sẵn
+   collection `products` — server sẽ tự tạo khi có sản phẩm đầu tiên.
+
+> Lưu ý: config trong ảnh bạn gửi (`apiKey`, `authDomain`, `appId`...) là
+> **Firebase Web SDK config** — dùng khi gọi Firebase thẳng từ trình duyệt.
+> Vì app này gọi Firebase từ server (Express), ta dùng **Admin SDK** với
+> service account key ở trên thay vì config đó.
 
 ---
 
@@ -212,8 +254,8 @@ client/                  Ứng dụng React (đây là Vite root)
 server/
   index.ts               Express: mount API + phục vụ file tĩnh (production)
   routes.ts              Route CRUD /api/products
-  db.ts                  Đọc/ghi data/products.json
-data/products.json        "Database" — toàn bộ dữ liệu sản phẩm (JSON)
+  firebase.ts            Khởi tạo Firebase Admin SDK (Firestore + Storage)
+  db.ts                  Đọc/ghi Firestore, upload/xóa ảnh trên Storage
 shared/const.ts          Hằng số dùng chung client + server
 dist/                    Kết quả build (không commit)
 patches/                 Patch cho wouter@3.7.1 (pnpm tự áp dụng)
@@ -268,6 +310,21 @@ Kiểm tra tiến trình `api` trong log `pnpm dev` có khởi động thành c�
 (nó in ra `Server running on http://localhost:3002/`). Nếu chỉ chạy `vite`
 riêng (không qua `pnpm dev`) thì sẽ không có backend để proxy tới.
 
+**Gọi `/api/products` báo lỗi 500 "Lỗi máy chủ"**
+Xem log server trong terminal — nếu thấy `Thiếu cấu hình Firebase`, nghĩa là
+chưa đặt `FIREBASE_SERVICE_ACCOUNT` (hoặc bộ 3 biến `FIREBASE_PROJECT_ID` /
+`FIREBASE_CLIENT_EMAIL` / `FIREBASE_PRIVATE_KEY`) trong `.env`. Xem mục 8.
+
+**Lỗi `Could not load the default credentials` hoặc `invalid_grant`**
+`FIREBASE_PRIVATE_KEY` bị sai định dạng — thường do dán thiếu `\n` hoặc thiếu
+dấu ngoặc kép khi copy từ file JSON. Dùng cách A (`FIREBASE_SERVICE_ACCOUNT`
+dán nguyên file JSON 1 dòng) để tránh lỗi này.
+
+**Upload ảnh báo lỗi quyền (403) hoặc ảnh không hiển thị**
+Kiểm tra đã bật **Firebase Storage** cho project chưa (Firebase Console >
+Storage > Get started), và `FIREBASE_STORAGE_BUCKET` (nếu có đặt) khớp đúng
+tên bucket hiển thị trong Console.
+
 **Cài đặt lỗi lung tung**
 Cài lại từ đầu:
 ```bash
@@ -284,8 +341,8 @@ Trên Windows 10 / Node v22.16.0 / pnpm 10.4.1:
 
 - `pnpm install` + `pnpm rebuild` — OK
 - `pnpm check` — không có lỗi TypeScript
-- `pnpm dev` — cả `web` (Vite, HTTP 200) và `api` (Express, cổng 3002) chạy
-  đồng thời; `GET/POST/PUT/DELETE /api/products` qua proxy Vite hoạt động đúng
-- `pnpm build` — build thành công ra `dist/`
-- `pnpm start` — server production chạy, phục vụ cả SPA (HTTP 200) và API
-  (`GET /api/products` trả đúng dữ liệu) trên cùng 1 cổng
+- Server khởi động và trả lỗi 500 gọn gàng (không crash tiến trình) khi thiếu
+  cấu hình Firebase — đã kiểm thử bằng cách gọi `/api/products` mà không đặt
+  biến môi trường `FIREBASE_*`
+- **Chưa kiểm thử với credential Firebase thật** (Firestore/Storage) — cần bạn
+  điền `.env` theo mục 8 rồi tự kiểm thử luồng thêm/sửa/xóa sản phẩm kèm ảnh

@@ -8,6 +8,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const isProduction = process.env.NODE_ENV === "production";
 
+try {
+  // Nạp file .env ở local dev/start; trên Vercel biến môi trường đã được set sẵn nên bỏ qua nếu thiếu file.
+  process.loadEnvFile();
+} catch {
+  /* không có file .env, dùng biến môi trường hệ thống */
+}
+
 async function startServer() {
   const app = express();
   const server = createServer(app);
