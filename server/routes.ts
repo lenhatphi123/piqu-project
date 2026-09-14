@@ -39,6 +39,7 @@ function validateProductInput(body: unknown): { error: string } | { data: {
   name: string;
   code: string;
   image: string;
+  imageEmbedding: number[];
   priceVnd: string;
   originalPrice: string;
   category: string;
@@ -61,11 +62,17 @@ function validateProductInput(body: unknown): { error: string } | { data: {
   if (!isNonEmptyString(b.category)) return { error: "Category is required." };
   const category = b.category.trim();
 
+  const imageEmbedding =
+    Array.isArray(b.imageEmbedding) && b.imageEmbedding.every((n) => typeof n === "number")
+      ? (b.imageEmbedding as number[])
+      : [];
+
   return {
     data: {
       name: String(b.name).trim(),
       code: typeof b.code === "string" ? b.code.trim() : "",
       image,
+      imageEmbedding,
       priceVnd: String(b.priceVnd).trim(),
       originalPrice: typeof b.originalPrice === "string" ? b.originalPrice.trim() : "",
       category,

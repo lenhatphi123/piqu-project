@@ -5,6 +5,8 @@ export type Product = {
   code: string;
   /** Data URL (base64) of the product image; empty means no image yet. */
   image: string;
+  /** MobileNet embedding vector of `image`, used for "search by photo"; empty when there's no image. */
+  imageEmbedding: number[];
   /** Sale price. */
   priceVnd: string;
   /** Cost price (original purchase price). */

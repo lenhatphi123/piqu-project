@@ -14,6 +14,8 @@ export type Product = {
   code: string;
   /** Data URL (base64) of the product image, stored directly in Firestore; empty means no image yet. */
   image: string;
+  /** MobileNet embedding vector of `image`, used for "search by photo"; empty when there's no image. */
+  imageEmbedding: number[];
   /** Sale price. */
   priceVnd: string;
   /** Cost price (original purchase price). */
@@ -45,6 +47,7 @@ function toProduct(id: string, data: FirebaseFirestore.DocumentData): Product {
     name: data.name ?? "",
     code: data.code ?? "",
     image: data.image ?? "",
+    imageEmbedding: Array.isArray(data.imageEmbedding) ? data.imageEmbedding : [],
     priceVnd: data.priceVnd ?? "",
     originalPrice: data.originalPrice ?? "",
     category: data.category ?? "",
@@ -99,6 +102,7 @@ export async function updateProduct(
     name: input.name ?? current.name,
     code: input.code ?? current.code,
     image: input.image ?? current.image,
+    imageEmbedding: input.imageEmbedding ?? current.imageEmbedding,
     priceVnd: input.priceVnd ?? current.priceVnd,
     originalPrice: input.originalPrice ?? current.originalPrice,
     category: input.category ?? current.category,

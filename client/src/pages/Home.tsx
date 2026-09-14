@@ -10,6 +10,7 @@ import { Link } from "wouter";
 import { ConfirmDialog, type ConfirmDialogState } from "@/components/ConfirmDialog";
 import {
   Box,
+  Camera,
   Check,
   ChevronDown,
   CircleHelp,
@@ -36,6 +37,16 @@ import {
   type Product,
   type ProductInput,
 } from "@/lib/api";
+import { computeImageEmbedding, cosineSimilarity } from "@/lib/imageSearch";
+
+/**
+ * Below this cosine similarity, a photo match is considered "not found".
+ * MobileNet's raw embeddings don't separate similarly-posed/lit product photos
+ * well — pairwise similarity between genuinely different products in this
+ * catalog ranged ~0.28-0.51, while identical photos scored ~1.0. The threshold
+ * sits high, above that noisy band, to favor fewer false positives.
+ */
+const PHOTO_MATCH_THRESHOLD = 0.75;
 
 /** Inline SVG logo, no dependency on an external storage service. */
 function BrandMark({ size = 34 }: { size?: number }) {
@@ -148,12 +159,18 @@ function SettingsMenu({
   side,
   showLabel,
   onError,
+  pendingEmbeddingCount,
+  onBackfillEmbeddings,
+  backfillRunning,
 }: {
   products: Product[];
   triggerClassName: string;
   side: "right" | "bottom";
   showLabel?: boolean;
   onError: (message: string) => void;
+  pendingEmbeddingCount: number;
+  onBackfillEmbeddings: () => void;
+  backfillRunning: boolean;
 }) {
   return (
     <DropdownMenu.Root>
@@ -183,6 +200,21 @@ function SettingsMenu({
             <Download size={15} style={{ marginRight: 8 }} />
             Download Excel file (.xlsx)
           </DropdownMenu.Item>
+          {pendingEmbeddingCount > 0 && (
+            <DropdownMenu.Item
+              className="filter-menu-item"
+              disabled={backfillRunning}
+              onSelect={(event) => {
+                event.preventDefault();
+                onBackfillEmbeddings();
+              }}
+            >
+              <Camera size={15} style={{ marginRight: 8 }} />
+              {backfillRunning
+                ? "Enabling photo search…"
+                : `Enable photo search for ${pendingEmbeddingCount} existing product${pendingEmbeddingCount === 1 ? "" : "s"}`}
+            </DropdownMenu.Item>
+          )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
@@ -194,6 +226,7 @@ const emptyDraft = (defaultCategory = ""): Product => ({
   name: "",
   code: "",
   image: "",
+  imageEmbedding: [],
   priceVnd: "",
   originalPrice: "",
   category: defaultCategory,
@@ -296,6 +329,43 @@ export default function Home() {
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dialog, setDialog] = useState<ConfirmDialogState | null>(null);
+  const photoInputRef = useRef<HTMLInputElement>(null);
+  const [photoQuery, setPhotoQuery] = useState<{ image: string; scores: Map<string, number> } | null>(null);
+  const [photoSearching, setPhotoSearching] = useState(false);
+  const [photoSearchError, setPhotoSearchError] = useState("");
+  const [backfillRunning, setBackfillRunning] = useState(false);
+
+  const pendingEmbeddingCount = useMemo(
+    () => products.filter((product) => product.image && product.imageEmbedding.length === 0).length,
+    [products],
+  );
+
+  const backfillEmbeddings = async () => {
+    setBackfillRunning(true);
+    try {
+      const targets = products.filter((product) => product.image && product.imageEmbedding.length === 0);
+      for (const product of targets) {
+        try {
+          const embedding = await computeImageEmbedding(product.image);
+          const updated = await apiUpdateProduct(product.id, {
+            name: product.name,
+            code: product.code,
+            image: product.image,
+            imageEmbedding: embedding,
+            priceVnd: product.priceVnd,
+            originalPrice: product.originalPrice,
+            category: product.category,
+            size: product.size,
+          });
+          setProducts((current) => current.map((item) => (item.id === product.id ? updated : item)));
+        } catch {
+          // Skip products whose image fails to decode/embed; leave them for a future retry.
+        }
+      }
+    } finally {
+      setBackfillRunning(false);
+    }
+  };
 
   const notify = (message: string) => setDialog({ title: "Something went wrong", message, confirmLabel: null });
 
@@ -324,7 +394,7 @@ export default function Home() {
 
   const filteredProducts = useMemo(() => {
     const normalized = search.trim().toLowerCase();
-    return products.filter((product) => {
+    const byFilters = products.filter((product) => {
       const matchesCategory = categoryFilter === "All" || product.category === categoryFilter;
       const matchesSearch =
         !normalized ||
@@ -333,7 +403,14 @@ export default function Home() {
         );
       return matchesCategory && matchesSearch;
     });
-  }, [products, search, categoryFilter]);
+
+    if (!photoQuery) return byFilters;
+
+    const { scores } = photoQuery;
+    return byFilters
+      .filter((product) => (scores.get(product.id) ?? 0) >= PHOTO_MATCH_THRESHOLD)
+      .sort((a, b) => (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0));
+  }, [products, search, categoryFilter, photoQuery]);
 
   const openNewProduct = () => {
     setEditingId(null);
@@ -365,8 +442,15 @@ export default function Home() {
         setImageError("This image is too large to compress under 500KB. Please choose a smaller image.");
         return;
       }
-      setDraft((current) => ({ ...current, image: dataUrl }));
+      setDraft((current) => ({ ...current, image: dataUrl, imageEmbedding: [] }));
       setImageError("");
+      // Computed in the background so it doesn't block the upload UI; saving
+      // before it resolves just means "search by photo" won't find this item yet.
+      computeImageEmbedding(dataUrl)
+        .then((embedding) => setDraft((current) => (current.image === dataUrl ? { ...current, imageEmbedding: embedding } : current)))
+        .catch(() => {
+          /* Non-critical: product still saves fine, just won't match photo search. */
+        });
     } catch {
       setImageError("Could not process the image file. Please try another one.");
     }
@@ -378,6 +462,43 @@ export default function Home() {
     event.target.value = "";
   };
 
+  const searchByPhoto = async (file: File | undefined) => {
+    if (!file) return;
+    if (!ACCEPTED_TYPES.includes(file.type)) {
+      setPhotoSearchError("Only JPG, PNG, WEBP, GIF, or AVIF image files are accepted.");
+      return;
+    }
+
+    setPhotoSearching(true);
+    setPhotoSearchError("");
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const queryEmbedding = await computeImageEmbedding(dataUrl);
+      const scores = new Map<string, number>();
+      for (const product of products) {
+        if (product.imageEmbedding.length) {
+          scores.set(product.id, cosineSimilarity(queryEmbedding, product.imageEmbedding));
+        }
+      }
+      setPhotoQuery({ image: dataUrl, scores });
+      setSearch("");
+    } catch {
+      setPhotoSearchError("Could not analyze this photo. Please try another one.");
+    } finally {
+      setPhotoSearching(false);
+    }
+  };
+
+  const onPhotoInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    void searchByPhoto(event.target.files?.[0]);
+    event.target.value = "";
+  };
+
+  const clearPhotoQuery = () => {
+    setPhotoQuery(null);
+    setPhotoSearchError("");
+  };
+
   const onImageDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDragActive(false);
@@ -385,7 +506,7 @@ export default function Home() {
   };
 
   const removeDraftImage = () => {
-    setDraft((current) => ({ ...current, image: "" }));
+    setDraft((current) => ({ ...current, image: "", imageEmbedding: [] }));
     setImageError("");
   };
 
@@ -397,6 +518,7 @@ export default function Home() {
       name: draft.name,
       code: draft.code,
       image: draft.image,
+      imageEmbedding: draft.imageEmbedding,
       priceVnd: draft.priceVnd,
       originalPrice: draft.originalPrice,
       category: draft.category,
@@ -456,7 +578,15 @@ export default function Home() {
           </Link>
         </nav>
         <div className="rail-footer">
-          <SettingsMenu products={products} triggerClassName="rail-help" side="right" onError={notify} />
+          <SettingsMenu
+            products={products}
+            triggerClassName="rail-help"
+            side="right"
+            onError={notify}
+            pendingEmbeddingCount={pendingEmbeddingCount}
+            onBackfillEmbeddings={() => void backfillEmbeddings()}
+            backfillRunning={backfillRunning}
+          />
           <button className="rail-help" aria-label="Help">
             <CircleHelp size={19} strokeWidth={1.8} />
           </button>
@@ -490,10 +620,21 @@ export default function Home() {
               side="bottom"
               showLabel
               onError={notify}
+              pendingEmbeddingCount={pendingEmbeddingCount}
+              onBackfillEmbeddings={() => void backfillEmbeddings()}
+              backfillRunning={backfillRunning}
             />
           </nav>
           <div className="topbar-context">
-            <SettingsMenu products={products} triggerClassName="topbar-settings" side="bottom" onError={notify} />
+            <SettingsMenu
+              products={products}
+              triggerClassName="topbar-settings"
+              side="bottom"
+              onError={notify}
+              pendingEmbeddingCount={pendingEmbeddingCount}
+              onBackfillEmbeddings={() => void backfillEmbeddings()}
+              backfillRunning={backfillRunning}
+            />
           </div>
         </header>
 
@@ -525,10 +666,31 @@ export default function Home() {
               <Search size={18} />
               <input
                 value={search}
-                onChange={(event) => setSearch(event.target.value)}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  if (photoQuery) clearPhotoQuery();
+                }}
                 placeholder="Search by name, code, or category"
               />
             </label>
+            <button
+              type="button"
+              className="filter-chip"
+              aria-label="Search by photo"
+              onClick={() => photoInputRef.current?.click()}
+              disabled={photoSearching}
+            >
+              {photoSearching ? <Loader2 size={16} className="spin" /> : <Camera size={16} />}
+              <span>{photoSearching ? "Analyzing…" : "Search by photo"}</span>
+            </button>
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept={ACCEPTED_TYPES.join(",")}
+              capture="environment"
+              onChange={onPhotoInputChange}
+              hidden
+            />
             <DropdownMenu.Root>
               <DropdownMenu.Trigger asChild>
                 <button type="button" className="filter-chip" aria-label="Filter by product category">
@@ -557,6 +719,26 @@ export default function Home() {
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
           </div>
+
+          {photoSearchError && (
+            <div className="empty-state" role="alert">
+              <b>Photo search failed</b>
+              <span>{photoSearchError}</span>
+            </div>
+          )}
+
+          {photoQuery && !photoSearchError && (
+            <div className="photo-query-banner">
+              <img src={photoQuery.image} alt="Search photo" />
+              <span>
+                Showing products that match this photo
+                {filteredProducts.length ? ` · ${filteredProducts.length} match${filteredProducts.length === 1 ? "" : "es"}` : " · no close matches found"}
+              </span>
+              <button type="button" onClick={clearPhotoQuery} aria-label="Clear photo search">
+                <X size={15} /> Clear
+              </button>
+            </div>
+          )}
 
           <div className="ledger-band">
             <span>
@@ -595,6 +777,11 @@ export default function Home() {
                     <span>
                       <b>{product.name}</b>
                       <small>{product.code}</small>
+                      {photoQuery && (
+                        <small className="match-score">
+                          {Math.round((photoQuery.scores.get(product.id) ?? 0) * 100)}% photo match
+                        </small>
+                      )}
                     </span>
                   </button>
                   <strong className="row-price">{product.priceVnd}</strong>

@@ -14,10 +14,17 @@
 .ledger-band span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .ledger-band i { width: 6px; height: 6px; border-radius: 50%; display: inline-block; background: #70826b; }
 .ledger-band b { font-size: 10px; font-weight: 500; letter-spacing: 0; text-align: center; }
+.filter-chip:disabled { opacity: .6; cursor: default; }
+.photo-query-banner { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 10px 14px; background: #fffdf8; border: 1px solid #dbd6cb; }
+.photo-query-banner img { width: 40px; height: 40px; object-fit: cover; border-radius: 3px; flex: none; }
+.photo-query-banner span { flex: 1; font-size: 12px; color: #454944; }
+.photo-query-banner button { display: flex; align-items: center; gap: 6px; background: transparent; border: 1px solid #dbd6cb; padding: 6px 10px; font-size: 11px; font-weight: 600; color: #6c6f67; cursor: pointer; white-space: nowrap; }
+.photo-query-banner button:hover { background: #f3f0e9; color: #202422; }
 .product-list { margin-top: 0; border-top: 0; }
 .product-thumb { width: 57px; height: 71px; position: relative; flex: none; overflow: hidden; background: #e8e1d6; }
 .product-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .row-product > span:last-child { min-width: 0; display: grid; gap: 6px; }
+.row-product small.match-score { color: #e85d35; font-weight: 700; }
 @media (max-width: 900px) {
   .desk-mark { display: none; }
   .manage-actions { gap: 12px; }
