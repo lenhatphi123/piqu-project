@@ -93,26 +93,24 @@ export async function updateProduct(
   if (input.image !== undefined) assertImageSize(input.image);
 
   const ref = getDb().collection(COLLECTION).doc(id);
-  const existing = await ref.get();
-  if (!existing.exists) return undefined;
-
-  const current = toProduct(existing.id, existing.data()!);
-
-  const updated: ProductDoc = {
-    name: input.name ?? current.name,
-    code: input.code ?? current.code,
-    image: input.image ?? current.image,
-    imageEmbedding: input.imageEmbedding ?? current.imageEmbedding,
-    priceVnd: input.priceVnd ?? current.priceVnd,
-    originalPrice: input.originalPrice ?? current.originalPrice,
-    category: input.category ?? current.category,
-    size: input.size ?? current.size,
-    createdAt: current.createdAt,
+  const updated: Partial<ProductDoc> = {
+    ...input,
     updated: new Date().toISOString(),
   };
 
-  await ref.set(updated);
-  return { id, ...updated };
+  // A single update() call instead of get()-then-set(): the caller always sends
+  // the full form (see validateProductInput), so there's nothing to merge from
+  // the existing document, and skipping the read halves the Firestore round trips.
+  try {
+    await ref.update(updated);
+  } catch (err) {
+    // Firestore throws (code 5, NOT_FOUND) when the document doesn't exist.
+    if ((err as { code?: number }).code === 5) return undefined;
+    throw err;
+  }
+
+  const fresh = await ref.get();
+  return toProduct(fresh.id, fresh.data()!);
 }
 
 export async function deleteProduct(id: string): Promise<boolean> {
