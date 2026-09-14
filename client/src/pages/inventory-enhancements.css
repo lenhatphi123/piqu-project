@@ -9,6 +9,7 @@
 .ledger-seal svg { width: 31px; height: 31px; flex: none; }
 .ledger-seal span { display: grid; gap: 3px; color: #5b5e56; font-size: 8px; letter-spacing: .1em; }
 .ledger-seal b { font-size: 9px; color: #313531; }.ledger-seal small { font-size: 8px; letter-spacing: .04em; }
+.mobile-tabs { display: none; }
 .ledger-band { display: flex; justify-content: space-between; gap: 24px; align-items: center; padding: 12px 0; border-bottom: 1px solid #d8d3c9; color: #6c6f67; font-size: 9px; letter-spacing: .08em; }
 .ledger-band span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .ledger-band i { width: 6px; height: 6px; border-radius: 50%; display: inline-block; background: #70826b; }
@@ -24,5 +25,24 @@
   .ledger-band { flex-wrap: wrap; gap: 7px; }
   .ledger-band b { text-align: left; width: 100%; order: 3; }
   .ledger-band span:last-child { margin-left: auto; }
+  .topbar-context .topbar-settings { display: none; }
+  .mobile-tabs { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+  .mobile-tab { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 6px 10px; background: transparent; color: #83857e; font-size: 9px; font-weight: 600; letter-spacing: .02em; transition: color .16s; text-align: center; }
+  .mobile-tab:hover { color: #454944; }
+  .mobile-tab.active { color: #e85d35; }
+  .mobile-tab.active svg { color: #e85d35; }
+  .settings-tab[data-state="open"] { color: #e85d35; }
+  .settings-tab[data-state="open"] svg { color: #e85d35; }
+  .filter-menu-empty { color: #9a9a91; cursor: default; font-style: italic; }
+  .filter-menu-empty:hover { background: transparent; color: #9a9a91; }
 }
 @media (max-width: 520px) { .ledger-band span:last-child { display: none; } }
+
+/* Confirm / notice dialog (replaces window.confirm / window.alert) */
+.confirm-modal { width: min(400px, 100%); background: #f8f6f0; box-shadow: 0 23px 70px rgba(0,0,0,.25); padding: 28px 26px 24px; text-align: center; display: grid; justify-items: center; gap: 4px; animation: modal-in .22s cubic-bezier(.23,1,.32,1); }
+.confirm-icon { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: #f9e4dd; color: #bc4222; margin-bottom: 6px; }
+.confirm-modal h2 { font: 400 22px "DM Serif Display", serif; margin: 0 0 6px; letter-spacing: -.02em; color: #202422; }
+.confirm-modal p { margin: 0 0 22px; color: #6c6f67; font-size: 13px; line-height: 1.5; }
+.confirm-actions { display: flex; justify-content: center; gap: 12px; width: 100%; }
+.confirm-actions button { flex: 1; justify-content: center; }
+@media (max-width: 520px) { .confirm-modal { padding: 24px 20px 20px; } }

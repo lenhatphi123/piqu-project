@@ -1,0 +1,6 @@
+/* Categories screen: same shell/list/modal language as inventory, narrower grid. */
+.category-heading, .category-row { grid-template-columns: 1fr minmax(140px, .5fr) 78px; }
+.category-row { min-height: 64px; }
+.category-row .row-product { padding: 0; }
+.category-editor-modal { width: min(460px, 100%); }
+.category-editor-body { grid-template-columns: 1fr; }

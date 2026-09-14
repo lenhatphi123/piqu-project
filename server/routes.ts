@@ -1,5 +1,4 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
-import { PRODUCT_CATEGORIES } from "../shared/const.js";
 import {
   createProduct,
   deleteProduct,
@@ -8,6 +7,13 @@ import {
   listProducts,
   updateProduct,
 } from "./db.js";
+import {
+  createCategory,
+  deleteCategory,
+  findCategoryByName,
+  listCategories,
+  updateCategory,
+} from "./categories-db.js";
 
 export const apiRouter = Router();
 
@@ -24,7 +30,6 @@ function asyncHandler(handler: AsyncHandler) {
 // Images are stored as base64 directly in the Firestore document (~1MB/document limit),
 // so the original image size limit must stay well below Firestore's cap.
 const MAX_IMAGE_BYTES = 500 * 1024;
-const DEFAULT_CATEGORY = PRODUCT_CATEGORIES[0];
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -53,10 +58,8 @@ function validateProductInput(body: unknown): { error: string } | { data: {
     return { error: "Image exceeds the 500KB limit." };
   }
 
-  const category =
-    typeof b.category === "string" && (PRODUCT_CATEGORIES as readonly string[]).includes(b.category)
-      ? b.category
-      : DEFAULT_CATEGORY;
+  if (!isNonEmptyString(b.category)) return { error: "Category is required." };
+  const category = b.category.trim();
 
   return {
     data: {
@@ -143,6 +146,66 @@ apiRouter.delete(
     const ok = await deleteProduct(req.params.id);
     if (!ok) {
       res.status(404).json({ error: "Product not found." });
+      return;
+    }
+    res.status(204).end();
+  }),
+);
+
+apiRouter.get(
+  "/categories",
+  asyncHandler(async (_req, res) => {
+    const categories = await listCategories();
+    res.json(categories);
+  }),
+);
+
+apiRouter.post(
+  "/categories",
+  asyncHandler(async (req, res) => {
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+    if (!name) {
+      res.status(400).json({ error: "Category name is required." });
+      return;
+    }
+    const existing = await findCategoryByName(name);
+    if (existing) {
+      res.status(409).json({ error: "A category with this name already exists." });
+      return;
+    }
+    const category = await createCategory(name);
+    res.status(201).json(category);
+  }),
+);
+
+apiRouter.put(
+  "/categories/:id",
+  asyncHandler(async (req, res) => {
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+    if (!name) {
+      res.status(400).json({ error: "Category name is required." });
+      return;
+    }
+    const existing = await findCategoryByName(name);
+    if (existing && existing.id !== req.params.id) {
+      res.status(409).json({ error: "A category with this name already exists." });
+      return;
+    }
+    const category = await updateCategory(req.params.id, name);
+    if (!category) {
+      res.status(404).json({ error: "Category not found." });
+      return;
+    }
+    res.json(category);
+  }),
+);
+
+apiRouter.delete(
+  "/categories/:id",
+  asyncHandler(async (req, res) => {
+    const ok = await deleteCategory(req.params.id);
+    if (!ok) {
+      res.status(404).json({ error: "Category not found." });
       return;
     }
     res.status(204).end();

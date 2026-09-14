@@ -6,6 +6,8 @@ import "./inventory-enhancements.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import ExcelJS from "exceljs";
+import { Link } from "wouter";
+import { ConfirmDialog, type ConfirmDialogState } from "@/components/ConfirmDialog";
 import {
   Box,
   Check,
@@ -19,6 +21,7 @@ import {
   Plus,
   Search,
   Settings,
+  Tag,
   Trash2,
   Upload,
   X,
@@ -26,12 +29,13 @@ import {
 import {
   createProduct as apiCreateProduct,
   deleteProduct as apiDeleteProduct,
+  fetchCategories,
   fetchProducts,
   updateProduct as apiUpdateProduct,
+  type Category,
   type Product,
   type ProductInput,
 } from "@/lib/api";
-import { PRODUCT_CATEGORIES } from "@shared/const";
 
 /** Inline SVG logo, no dependency on an external storage service. */
 function BrandMark({ size = 34 }: { size?: number }) {
@@ -142,16 +146,21 @@ function SettingsMenu({
   products,
   triggerClassName,
   side,
+  showLabel,
+  onError,
 }: {
   products: Product[];
   triggerClassName: string;
   side: "right" | "bottom";
+  showLabel?: boolean;
+  onError: (message: string) => void;
 }) {
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
         <button className={triggerClassName} aria-label="Settings">
           <Settings size={19} strokeWidth={1.8} />
+          {showLabel && <span>Settings</span>}
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
@@ -167,7 +176,7 @@ function SettingsMenu({
             className="filter-menu-item"
             onSelect={() => {
               void exportProductsToExcel(products).catch(() =>
-                window.alert("Could not create the Excel file. Please try again."),
+                onError("Could not create the Excel file. Please try again."),
               );
             }}
           >
@@ -180,14 +189,14 @@ function SettingsMenu({
   );
 }
 
-const emptyDraft = (): Product => ({
+const emptyDraft = (defaultCategory = ""): Product => ({
   id: "",
   name: "",
   code: "",
   image: "",
   priceVnd: "",
   originalPrice: "",
-  category: PRODUCT_CATEGORIES[0],
+  category: defaultCategory,
   size: "",
   updated: "",
   createdAt: "",
@@ -273,6 +282,7 @@ async function exportProductsToExcel(products: Product[]) {
 
 export default function Home() {
   const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -285,14 +295,21 @@ export default function Home() {
   const [imageError, setImageError] = useState("");
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [dialog, setDialog] = useState<ConfirmDialogState | null>(null);
+
+  const notify = (message: string) => setDialog({ title: "Something went wrong", message, confirmLabel: null });
+
+  const categoryNames = useMemo(() => categories.map((category) => category.name), [categories]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setLoadError("");
-    fetchProducts()
-      .then((data) => {
-        if (!cancelled) setProducts(data);
+    Promise.all([fetchProducts(), fetchCategories()])
+      .then(([productData, categoryData]) => {
+        if (cancelled) return;
+        setProducts(productData);
+        setCategories(categoryData);
       })
       .catch((err) => {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : "Could not load data.");
@@ -320,7 +337,7 @@ export default function Home() {
 
   const openNewProduct = () => {
     setEditingId(null);
-    setDraft(emptyDraft());
+    setDraft(emptyDraft(categoryNames[0] ?? ""));
     setImageError("");
     setDragActive(false);
     setEditorOpen(true);
@@ -404,16 +421,22 @@ export default function Home() {
     }
   };
 
-  const deleteProduct = async (product: Product) => {
-    if (!window.confirm(`Remove "${product.name}" from the catalog?`)) return;
-    const previous = products;
-    setProducts((current) => current.filter((item) => item.id !== product.id));
-    try {
-      await apiDeleteProduct(product.id);
-    } catch (err) {
-      setProducts(previous);
-      window.alert(err instanceof Error ? err.message : "Could not delete the product.");
-    }
+  const deleteProduct = (product: Product) => {
+    setDialog({
+      title: "Remove product",
+      message: `Remove "${product.name}" from the catalog?`,
+      confirmLabel: "Remove",
+      onConfirm: async () => {
+        const previous = products;
+        setProducts((current) => current.filter((item) => item.id !== product.id));
+        try {
+          await apiDeleteProduct(product.id);
+        } catch (err) {
+          setProducts(previous);
+          notify(err instanceof Error ? err.message : "Could not delete the product.");
+        }
+      },
+    });
   };
 
   return (
@@ -427,9 +450,13 @@ export default function Home() {
             <Box size={19} strokeWidth={1.8} />
             <span>Inventory</span>
           </span>
+          <Link href="/categories" className="rail-item">
+            <Tag size={19} strokeWidth={1.8} />
+            <span>Categories</span>
+          </Link>
         </nav>
         <div className="rail-footer">
-          <SettingsMenu products={products} triggerClassName="rail-help" side="right" />
+          <SettingsMenu products={products} triggerClassName="rail-help" side="right" onError={notify} />
           <button className="rail-help" aria-label="Help">
             <CircleHelp size={19} strokeWidth={1.8} />
           </button>
@@ -441,18 +468,32 @@ export default function Home() {
           <span className="desk-mark">
             <BrandMark />
             <span>
-              <b>INVENTORY</b><small>PRODUCT RECORDS</small>
+              <b>PiQu</b><small>PRODUCT RECORDS</small>
             </span>
           </span>
           <span className="mobile-mark">
             <BrandMark />
-            <span>INVENTORY</span>
+            <span>PiQu</span>
           </span>
-          <div className="topbar-context">
-            <span className="presence">
-              <i /> Online
+          <nav className="mobile-tabs" aria-label="Main navigation">
+            <span className="mobile-tab active">
+              <Box size={18} strokeWidth={1.8} />
+              <span>Inventory</span>
             </span>
-            <SettingsMenu products={products} triggerClassName="topbar-settings" side="bottom" />
+            <Link href="/categories" className="mobile-tab">
+              <Tag size={18} strokeWidth={1.8} />
+              <span>Categories</span>
+            </Link>
+            <SettingsMenu
+              products={products}
+              triggerClassName="mobile-tab settings-tab"
+              side="bottom"
+              showLabel
+              onError={notify}
+            />
+          </nav>
+          <div className="topbar-context">
+            <SettingsMenu products={products} triggerClassName="topbar-settings" side="bottom" onError={notify} />
           </div>
         </header>
 
@@ -469,7 +510,7 @@ export default function Home() {
               <div className="ledger-seal">
                 <BrandMark />
                 <span>
-                  <b>INTERNAL RECORDS</b>
+                  <b>PiQu</b>
                   <small>Inventory catalog</small>
                 </span>
               </div>
@@ -503,7 +544,7 @@ export default function Home() {
                   collisionPadding={12}
                   avoidCollisions
                 >
-                  {["All", ...PRODUCT_CATEGORIES].map((category) => (
+                  {["All", ...categoryNames].map((category) => (
                     <DropdownMenu.Item
                       key={category}
                       className={category === categoryFilter ? "filter-menu-item active" : "filter-menu-item"}
@@ -683,7 +724,7 @@ export default function Home() {
                     value={draft.category}
                     onChange={(event) => setDraft({ ...draft, category: event.target.value })}
                   >
-                    {PRODUCT_CATEGORIES.map((category) => (
+                    {categoryNames.map((category) => (
                       <option key={category} value={category}>
                         {category}
                       </option>
@@ -733,6 +774,8 @@ export default function Home() {
           </form>
         </div>
       )}
+
+      {dialog && <ConfirmDialog state={dialog} onClose={() => setDialog(null)} />}
     </main>
   );
 }
