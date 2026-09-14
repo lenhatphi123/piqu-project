@@ -13,16 +13,16 @@ export const apiRouter = Router();
 
 type AsyncHandler = (req: Request, res: Response) => Promise<void>;
 
-// Bọc handler async để lỗi (vd. thiếu cấu hình Firebase, mất kết nối) trả về 500
-// gọn gàng thay vì làm sập tiến trình server (Express 4 không tự bắt promise rejection).
+// Wraps async handlers so errors (e.g. missing Firebase config, lost connection) return a clean
+// 500 instead of crashing the server process (Express 4 doesn't catch promise rejections on its own).
 function asyncHandler(handler: AsyncHandler) {
   return (req: Request, res: Response, next: NextFunction) => {
     handler(req, res).catch(next);
   };
 }
 
-// Ảnh lưu base64 trực tiếp trong document Firestore (giới hạn ~1MB/document),
-// nên giới hạn ảnh gốc phải nhỏ hơn nhiều so với hạn mức của Firestore.
+// Images are stored as base64 directly in the Firestore document (~1MB/document limit),
+// so the original image size limit must stay well below Firestore's cap.
 const MAX_IMAGE_BYTES = 500 * 1024;
 const DEFAULT_CATEGORY = PRODUCT_CATEGORIES[0];
 
@@ -40,17 +40,17 @@ function validateProductInput(body: unknown): { error: string } | { data: {
   size: string;
 } } {
   if (typeof body !== "object" || body === null) {
-    return { error: "Payload không hợp lệ." };
+    return { error: "Invalid payload." };
   }
   const b = body as Record<string, unknown>;
 
-  if (!isNonEmptyString(b.name)) return { error: "Tên sản phẩm là bắt buộc." };
-  if (!isNonEmptyString(b.priceVnd)) return { error: "Giá bán là bắt buộc." };
+  if (!isNonEmptyString(b.name)) return { error: "Product name is required." };
+  if (!isNonEmptyString(b.priceVnd)) return { error: "Sale price is required." };
 
   const image = typeof b.image === "string" ? b.image : "";
   if (image && image.length > MAX_IMAGE_BYTES * 1.4) {
-    // base64 ~ 4/3 kích thước gốc, cho biên độ sai số
-    return { error: "Ảnh vượt quá giới hạn 500KB." };
+    // base64 is ~4/3 the original size; this adds a margin of error
+    return { error: "Image exceeds the 500KB limit." };
   }
 
   const category =
@@ -84,7 +84,7 @@ apiRouter.get(
   asyncHandler(async (req, res) => {
     const product = await getProduct(req.params.id);
     if (!product) {
-      res.status(404).json({ error: "Không tìm thấy sản phẩm." });
+      res.status(404).json({ error: "Product not found." });
       return;
     }
     res.json(product);
@@ -123,7 +123,7 @@ apiRouter.put(
     try {
       const product = await updateProduct(req.params.id, result.data);
       if (!product) {
-        res.status(404).json({ error: "Không tìm thấy sản phẩm." });
+        res.status(404).json({ error: "Product not found." });
         return;
       }
       res.json(product);
@@ -142,7 +142,7 @@ apiRouter.delete(
   asyncHandler(async (req, res) => {
     const ok = await deleteProduct(req.params.id);
     if (!ok) {
-      res.status(404).json({ error: "Không tìm thấy sản phẩm." });
+      res.status(404).json({ error: "Product not found." });
       return;
     }
     res.status(204).end();
@@ -152,5 +152,5 @@ apiRouter.delete(
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 apiRouter.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   console.error(err);
-  res.status(500).json({ error: "Lỗi máy chủ. Vui lòng thử lại sau." });
+  res.status(500).json({ error: "Server error. Please try again later." });
 });

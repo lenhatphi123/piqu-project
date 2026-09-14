@@ -9,21 +9,21 @@ const __dirname = path.dirname(__filename);
 const isProduction = process.env.NODE_ENV === "production";
 
 try {
-  // Nạp file .env ở local dev/start; trên Vercel biến môi trường đã được set sẵn nên bỏ qua nếu thiếu file.
+  // Load the .env file for local dev/start; on Vercel env vars are already set, so skip if the file is missing.
   process.loadEnvFile();
 } catch {
-  /* không có file .env, dùng biến môi trường hệ thống */
+  /* no .env file present, fall back to system environment variables */
 }
 
 async function startServer() {
   const app = express();
   const server = createServer(app);
 
-  // Ảnh sản phẩm được gửi dạng base64 nên payload JSON có thể khá lớn.
+  // Product images are sent as base64, so the JSON payload can be fairly large.
   app.use(express.json({ limit: "10mb" }));
 
   if (!isProduction) {
-    // Dev: Vite chạy ở cổng riêng (3000) và proxy /api sang server này (mặc định 3001).
+    // Dev: Vite runs on its own port (3000) and proxies /api to this server (default 3001).
     app.use((req, res, next) => {
       res.header("Access-Control-Allow-Origin", "*");
       res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");

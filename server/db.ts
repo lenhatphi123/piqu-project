@@ -2,21 +2,21 @@ import { getDb } from "./firebase.js";
 
 const COLLECTION = "products";
 
-// Firestore giới hạn ~1MB/document. Ảnh lưu base64 ngay trong document nên
-// phải giới hạn chặt hơn giới hạn phía client (2MB) để có chỗ cho base64
-// (~4/3 kích thước gốc) cộng các trường khác.
+// Firestore limits documents to ~1MB. Images are stored as base64 directly in the
+// document, so this must be tighter than the client-side limit (2MB) to leave
+// room for the base64 overhead (~4/3 of the original size) plus the other fields.
 const MAX_IMAGE_BASE64_BYTES = 700 * 1024;
 
 export type Product = {
   id: string;
   name: string;
-  /** Mã sản phẩm (NO). */
+  /** Product code (NO). */
   code: string;
-  /** Data URL (base64) của ảnh sản phẩm, lưu trực tiếp trong Firestore; rỗng nghĩa là chưa có ảnh. */
+  /** Data URL (base64) of the product image, stored directly in Firestore; empty means no image yet. */
   image: string;
-  /** Giá bán. */
+  /** Sale price. */
   priceVnd: string;
-  /** Giá mua (giá gốc nhập vào). */
+  /** Cost price (original purchase price). */
   originalPrice: string;
   category: string;
   size: string;
@@ -28,7 +28,7 @@ type ProductDoc = Omit<Product, "id">;
 
 export class ImageTooLargeError extends Error {
   constructor() {
-    super("Ảnh quá lớn để lưu (tối đa ~500KB). Hãy chọn ảnh nhỏ hơn hoặc nén lại.");
+    super("Image is too large to save (max ~500KB). Please choose a smaller image or compress it.");
     this.name = "ImageTooLargeError";
   }
 }

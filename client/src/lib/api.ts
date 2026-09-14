@@ -1,13 +1,13 @@
 export type Product = {
   id: string;
   name: string;
-  /** Mã sản phẩm (NO). */
+  /** Product code (NO). */
   code: string;
-  /** Data URL (base64) của ảnh sản phẩm; rỗng nghĩa là chưa có ảnh. */
+  /** Data URL (base64) of the product image; empty means no image yet. */
   image: string;
-  /** Giá bán. */
+  /** Sale price. */
   priceVnd: string;
-  /** Giá mua (giá gốc nhập vào). */
+  /** Cost price (original purchase price). */
   originalPrice: string;
   category: string;
   size: string;
@@ -24,7 +24,7 @@ async function parseErrorMessage(res: Response): Promise<string> {
   } catch {
     /* fallthrough */
   }
-  return `Yêu cầu thất bại (HTTP ${res.status}).`;
+  return `Request failed (HTTP ${res.status}).`;
 }
 
 export async function fetchProducts(): Promise<Product[]> {

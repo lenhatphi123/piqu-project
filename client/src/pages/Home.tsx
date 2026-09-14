@@ -5,17 +5,20 @@
 import "./inventory-enhancements.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import ExcelJS from "exceljs";
 import {
   Box,
   Check,
   ChevronDown,
   CircleHelp,
+  Download,
   Edit3,
   ImageOff,
   Loader2,
   MoreHorizontal,
   Plus,
   Search,
+  Settings,
   Trash2,
   Upload,
   X,
@@ -30,10 +33,10 @@ import {
 } from "@/lib/api";
 import { PRODUCT_CATEGORIES } from "@shared/const";
 
-/** Logo dạng SVG nội tuyến, không phụ thuộc dịch vụ lưu trữ bên ngoài. */
+/** Inline SVG logo, no dependency on an external storage service. */
 function BrandMark({ size = 34 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 34 34" role="img" aria-label="Kho hàng" focusable="false">
+    <svg width={size} height={size} viewBox="0 0 34 34" role="img" aria-label="Inventory" focusable="false">
       <rect width="34" height="34" rx="4" fill="#202422" />
       <path d="M8 13.2 17 8.5l9 4.7v8.1L17 26l-9-4.7v-8.1Z" fill="none" stroke="#e85d35" strokeWidth="1.9" strokeLinejoin="round" />
       <path d="m8 13.2 9 4.7 9-4.7M17 17.9V26" fill="none" stroke="#e85d35" strokeWidth="1.9" strokeLinejoin="round" />
@@ -42,9 +45,9 @@ function BrandMark({ size = 34 }: { size?: number }) {
 }
 
 /**
- * Giới hạn dung lượng ảnh tải lên (ảnh được nhúng thẳng vào state dưới dạng data URL).
- * Ảnh lưu base64 trực tiếp trong document Firestore (giới hạn ~1MB/document),
- * nên phải giữ nhỏ hơn nhiều so với giới hạn đó.
+ * Upload size limit (the image is embedded straight into state as a data URL).
+ * Images are stored as base64 directly in the Firestore document (~1MB/document limit),
+ * so this must stay well below that limit.
  */
 const MAX_IMAGE_BYTES = 500 * 1024;
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"];
@@ -53,11 +56,65 @@ const readFileAsDataUrl = (file: File) =>
   new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error("Không đọc được tệp"));
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read the file"));
     reader.readAsDataURL(file);
   });
 
-/** Ô ảnh sản phẩm: hiện ảnh nếu có, nếu không thì hiện ô giữ chỗ. */
+const loadImage = (dataUrl: string) =>
+  new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Could not decode the image file"));
+    img.src = dataUrl;
+  });
+
+const dataUrlByteLength = (dataUrl: string) => {
+  const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+  return Math.floor((base64.length * 3) / 4) - padding;
+};
+
+/**
+ * Downscales and re-encodes an image until it fits under maxBytes, by
+ * progressively shrinking dimensions and JPEG quality. Runs entirely
+ * client-side via canvas; returns the original file untouched if it
+ * already fits.
+ */
+const compressImageToFit = async (file: File, maxBytes: number): Promise<string> => {
+  const original = await readFileAsDataUrl(file);
+  if (file.size <= maxBytes) return original;
+
+  const img = await loadImage(original);
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return original;
+
+  let { width, height } = img;
+  let quality = 0.9;
+  let result = original;
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    canvas.width = Math.max(1, Math.round(width));
+    canvas.height = Math.max(1, Math.round(height));
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    result = canvas.toDataURL("image/jpeg", quality);
+
+    if (dataUrlByteLength(result) <= maxBytes) return result;
+
+    // Alternate between reducing quality and shrinking dimensions.
+    if (quality > 0.5) {
+      quality -= 0.15;
+    } else {
+      width *= 0.75;
+      height *= 0.75;
+    }
+  }
+
+  return result;
+};
+
+/** Product image tile: shows the image if present, otherwise a placeholder. */
 function ProductImage({ src, alt, className }: { src: string; alt: string; className?: string }) {
   const [failed, setFailed] = useState(false);
 
@@ -80,6 +137,49 @@ function ProductImage({ src, alt, className }: { src: string; alt: string; class
   );
 }
 
+/** Settings menu (Excel export, ...), shared between the desktop rail and the mobile topbar. */
+function SettingsMenu({
+  products,
+  triggerClassName,
+  side,
+}: {
+  products: Product[];
+  triggerClassName: string;
+  side: "right" | "bottom";
+}) {
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button className={triggerClassName} aria-label="Settings">
+          <Settings size={19} strokeWidth={1.8} />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          className="filter-menu"
+          side={side}
+          align="end"
+          sideOffset={10}
+          collisionPadding={12}
+          avoidCollisions
+        >
+          <DropdownMenu.Item
+            className="filter-menu-item"
+            onSelect={() => {
+              void exportProductsToExcel(products).catch(() =>
+                window.alert("Could not create the Excel file. Please try again."),
+              );
+            }}
+          >
+            <Download size={15} style={{ marginRight: 8 }} />
+            Download Excel file (.xlsx)
+          </DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+}
+
 const emptyDraft = (): Product => ({
   id: "",
   name: "",
@@ -97,7 +197,7 @@ const formatUpdated = (iso: string) => {
   if (!iso) return "";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
-  return date.toLocaleString("vi-VN", {
+  return date.toLocaleString("en-US", {
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
@@ -106,6 +206,71 @@ const formatUpdated = (iso: string) => {
   });
 };
 
+/** Extracts the image format (jpeg/png/gif) from a data URL so ExcelJS knows how to embed it. */
+function imageExtensionFromDataUrl(dataUrl: string): "jpeg" | "png" | "gif" | null {
+  const match = /^data:image\/(jpeg|jpg|png|gif)/i.exec(dataUrl);
+  if (!match) return null;
+  const type = match[1].toLowerCase();
+  return type === "jpg" ? "jpeg" : (type as "jpeg" | "png" | "gif");
+}
+
+const ROW_HEIGHT = 56;
+const IMAGE_COLUMN_WIDTH = 12;
+
+/** Exports all currently visible inventory data to an Excel (.xlsx) file, including each product's image. */
+async function exportProductsToExcel(products: Product[]) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Inventory");
+
+  sheet.columns = [
+    { header: "Image", key: "image", width: IMAGE_COLUMN_WIDTH },
+    { header: "Product Code", key: "code", width: 16 },
+    { header: "Product Name", key: "name", width: 28 },
+    { header: "Sale Price", key: "priceVnd", width: 14 },
+    { header: "Cost Price", key: "originalPrice", width: 14 },
+    { header: "Size", key: "size", width: 10 },
+    { header: "Category", key: "category", width: 16 },
+    { header: "Updated At", key: "updated", width: 18 },
+  ];
+  sheet.getRow(1).font = { bold: true };
+
+  products.forEach((product, index) => {
+    const rowNumber = index + 2;
+    sheet.addRow({
+      code: product.code,
+      name: product.name,
+      priceVnd: product.priceVnd,
+      originalPrice: product.originalPrice,
+      size: product.size,
+      category: product.category,
+      updated: formatUpdated(product.updated),
+    });
+    sheet.getRow(rowNumber).height = ROW_HEIGHT;
+
+    const extension = product.image ? imageExtensionFromDataUrl(product.image) : null;
+    if (extension) {
+      const imageId = workbook.addImage({ base64: product.image, extension });
+      sheet.addImage(imageId, {
+        tl: { col: 0.1, row: rowNumber - 1 + 0.1 },
+        ext: { width: 52, height: 52 },
+        editAs: "oneCell",
+      });
+    }
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const url = URL.createObjectURL(blob);
+  const timestamp = new Date().toISOString().slice(0, 10);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `inventory-${timestamp}.xlsx`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function Home() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
@@ -113,7 +278,7 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const [search, setSearch] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState<string>("Tất cả");
+  const [categoryFilter, setCategoryFilter] = useState<string>("All");
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Product>(emptyDraft());
@@ -130,7 +295,7 @@ export default function Home() {
         if (!cancelled) setProducts(data);
       })
       .catch((err) => {
-        if (!cancelled) setLoadError(err instanceof Error ? err.message : "Không tải được dữ liệu.");
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : "Could not load data.");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -143,7 +308,7 @@ export default function Home() {
   const filteredProducts = useMemo(() => {
     const normalized = search.trim().toLowerCase();
     return products.filter((product) => {
-      const matchesCategory = categoryFilter === "Tất cả" || product.category === categoryFilter;
+      const matchesCategory = categoryFilter === "All" || product.category === categoryFilter;
       const matchesSearch =
         !normalized ||
         [product.name, product.code, product.category].some((item) =>
@@ -173,27 +338,26 @@ export default function Home() {
     if (!file) return;
 
     if (!ACCEPTED_TYPES.includes(file.type)) {
-      setImageError("Chỉ nhận tệp ảnh JPG, PNG, WEBP, GIF hoặc AVIF.");
-      return;
-    }
-    if (file.size > MAX_IMAGE_BYTES) {
-      const kb = Math.round(file.size / 1024);
-      setImageError(`Ảnh ${kb}KB vượt giới hạn 500KB. Hãy chọn ảnh nhỏ hơn.`);
+      setImageError("Only JPG, PNG, WEBP, GIF, or AVIF image files are accepted.");
       return;
     }
 
     try {
-      const dataUrl = await readFileAsDataUrl(file);
+      const dataUrl = await compressImageToFit(file, MAX_IMAGE_BYTES);
+      if (dataUrlByteLength(dataUrl) > MAX_IMAGE_BYTES) {
+        setImageError("This image is too large to compress under 500KB. Please choose a smaller image.");
+        return;
+      }
       setDraft((current) => ({ ...current, image: dataUrl }));
       setImageError("");
     } catch {
-      setImageError("Không đọc được tệp ảnh. Hãy thử tệp khác.");
+      setImageError("Could not process the image file. Please try another one.");
     }
   };
 
   const onFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     void acceptImageFile(event.target.files?.[0]);
-    // Cho phép chọn lại đúng tệp vừa xóa.
+    // Allow re-selecting the same file that was just removed.
     event.target.value = "";
   };
 
@@ -234,21 +398,21 @@ export default function Home() {
       }
       setEditorOpen(false);
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : "Không lưu được sản phẩm.");
+      setFormError(err instanceof Error ? err.message : "Could not save the product.");
     } finally {
       setSaving(false);
     }
   };
 
   const deleteProduct = async (product: Product) => {
-    if (!window.confirm(`Xóa "${product.name}" khỏi danh mục?`)) return;
+    if (!window.confirm(`Remove "${product.name}" from the catalog?`)) return;
     const previous = products;
     setProducts((current) => current.filter((item) => item.id !== product.id));
     try {
       await apiDeleteProduct(product.id);
     } catch (err) {
       setProducts(previous);
-      window.alert(err instanceof Error ? err.message : "Không xóa được sản phẩm.");
+      window.alert(err instanceof Error ? err.message : "Could not delete the product.");
     }
   };
 
@@ -258,15 +422,18 @@ export default function Home() {
         <span className="mark-button" aria-hidden="true">
           <BrandMark />
         </span>
-        <nav className="rail-nav" aria-label="Điều hướng chính">
+        <nav className="rail-nav" aria-label="Main navigation">
           <span className="rail-item active">
             <Box size={19} strokeWidth={1.8} />
-            <span>Kho hàng</span>
+            <span>Inventory</span>
           </span>
         </nav>
-        <button className="rail-help" aria-label="Trợ giúp">
-          <CircleHelp size={19} strokeWidth={1.8} />
-        </button>
+        <div className="rail-footer">
+          <SettingsMenu products={products} triggerClassName="rail-help" side="right" />
+          <button className="rail-help" aria-label="Help">
+            <CircleHelp size={19} strokeWidth={1.8} />
+          </button>
+        </div>
       </aside>
 
       <section className="app-shell">
@@ -274,18 +441,18 @@ export default function Home() {
           <span className="desk-mark">
             <BrandMark />
             <span>
-              <b>KHO</b> HÀNG<small>HỒ SƠ SẢN PHẨM</small>
+              <b>INVENTORY</b><small>PRODUCT RECORDS</small>
             </span>
           </span>
           <span className="mobile-mark">
             <BrandMark />
-            <span>KHO HÀNG</span>
+            <span>INVENTORY</span>
           </span>
           <div className="topbar-context">
             <span className="presence">
-              <i /> Trực tuyến
+              <i /> Online
             </span>
-            <span className="account-initials">LN</span>
+            <SettingsMenu products={products} triggerClassName="topbar-settings" side="bottom" />
           </div>
         </header>
 
@@ -293,21 +460,21 @@ export default function Home() {
           <div className="manage-header">
             <div>
               <span className="eyebrow compact">
-                <span /> HỒ SƠ KHO HÀNG
+                <span /> INVENTORY RECORDS
               </span>
-              <h1>Kho sản phẩm</h1>
-              <p>Danh mục nội bộ · {filteredProducts.length} hồ sơ đang hiển thị</p>
+              <h1>Product Inventory</h1>
+              <p>Internal catalog · {filteredProducts.length} records shown</p>
             </div>
             <div className="manage-actions">
               <div className="ledger-seal">
                 <BrandMark />
                 <span>
-                  <b>HỒ SƠ NỘI BỘ</b>
-                  <small>Danh mục kho hàng</small>
+                  <b>INTERNAL RECORDS</b>
+                  <small>Inventory catalog</small>
                 </span>
               </div>
               <button className="add-product" onClick={openNewProduct}>
-                <Plus size={18} /> Thêm sản phẩm
+                <Plus size={18} /> Add Product
               </button>
             </div>
           </div>
@@ -318,13 +485,13 @@ export default function Home() {
               <input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Tìm theo tên, mã hoặc nhóm hàng"
+                placeholder="Search by name, code, or category"
               />
             </label>
             <DropdownMenu.Root>
               <DropdownMenu.Trigger asChild>
-                <button type="button" className="filter-chip" aria-label="Lọc theo loại sản phẩm">
-                  <span>{categoryFilter === "Tất cả" ? "Tất cả nhóm hàng" : categoryFilter}</span>
+                <button type="button" className="filter-chip" aria-label="Filter by product category">
+                  <span>{categoryFilter === "All" ? "All categories" : categoryFilter}</span>
                   <ChevronDown size={15} />
                 </button>
               </DropdownMenu.Trigger>
@@ -336,13 +503,13 @@ export default function Home() {
                   collisionPadding={12}
                   avoidCollisions
                 >
-                  {["Tất cả", ...PRODUCT_CATEGORIES].map((category) => (
+                  {["All", ...PRODUCT_CATEGORIES].map((category) => (
                     <DropdownMenu.Item
                       key={category}
                       className={category === categoryFilter ? "filter-menu-item active" : "filter-menu-item"}
                       onSelect={() => setCategoryFilter(category)}
                     >
-                      {category === "Tất cả" ? "Tất cả nhóm hàng" : category}
+                      {category === "All" ? "All categories" : category}
                     </DropdownMenu.Item>
                   ))}
                 </DropdownMenu.Content>
@@ -352,13 +519,13 @@ export default function Home() {
 
           <div className="ledger-band">
             <span>
-              <i /> ĐANG THEO DÕI
+              <i /> LIVE TRACKING
             </span>
           </div>
 
           {loadError && (
             <div className="empty-state" role="alert">
-              <b>Không tải được dữ liệu</b>
+              <b>Could not load data</b>
               <span>{loadError}</span>
             </div>
           )}
@@ -366,17 +533,17 @@ export default function Home() {
           {loading ? (
             <div className="empty-state">
               <Loader2 size={24} className="spin" />
-              <b>Đang tải dữ liệu…</b>
+              <b>Loading data…</b>
             </div>
           ) : (
           <div className="product-list" role="list">
             <div className="list-heading">
-              <span>SẢN PHẨM</span>
-              <span>GIÁ BÁN</span>
-              <span>GIÁ MUA</span>
+              <span>PRODUCT</span>
+              <span>SALE PRICE</span>
+              <span>COST PRICE</span>
               <span>SIZE</span>
-              <span>LOẠI</span>
-              <span>CẬP NHẬT</span>
+              <span>CATEGORY</span>
+              <span>UPDATED</span>
               <span />
             </div>
             {filteredProducts.length ? (
@@ -395,12 +562,12 @@ export default function Home() {
                   <span className="row-category">{product.category}</span>
                   <span className="row-time">{formatUpdated(product.updated)}</span>
                   <div className="row-actions">
-                    <button aria-label={`Sửa ${product.name}`} onClick={() => openEditProduct(product)}>
+                    <button aria-label={`Edit ${product.name}`} onClick={() => openEditProduct(product)}>
                       <Edit3 size={17} />
                     </button>
                     <button
                       className="delete"
-                      aria-label={`Xóa ${product.name}`}
+                      aria-label={`Delete ${product.name}`}
                       onClick={() => deleteProduct(product)}
                     >
                       <Trash2 size={17} />
@@ -411,8 +578,8 @@ export default function Home() {
             ) : (
               <div className="empty-state">
                 <Search size={24} />
-                <b>Không tìm thấy hồ sơ phù hợp</b>
-                <span>Hãy thử một từ khóa khác hoặc thêm sản phẩm mới.</span>
+                <b>No matching records found</b>
+                <span>Try a different search term or add a new product.</span>
               </div>
             )}
           </div>
@@ -430,15 +597,15 @@ export default function Home() {
             <div className="modal-title">
               <div>
                 <span className="eyebrow compact">
-                  <span /> HỒ SƠ KHO HÀNG
+                  <span /> INVENTORY RECORDS
                 </span>
-                <h2>{editingId ? "Chỉnh sửa sản phẩm" : "Thêm sản phẩm mới"}</h2>
+                <h2>{editingId ? "Edit Product" : "Add New Product"}</h2>
               </div>
               <button
                 type="button"
                 className="icon-close"
                 onClick={() => setEditorOpen(false)}
-                aria-label="Đóng"
+                aria-label="Close"
               >
                 <X size={20} />
               </button>
@@ -455,13 +622,13 @@ export default function Home() {
                 onDragLeave={() => setDragActive(false)}
                 onDrop={onImageDrop}
               >
-                <ProductImage className="upload-preview" src={draft.image} alt="Ảnh sản phẩm đã chọn" />
+                <ProductImage className="upload-preview" src={draft.image} alt="Selected product image" />
                 <div className="upload-body">
-                  <b>Ảnh đại diện</b>
+                  <b>Cover Image</b>
                   <span>
                     {draft.image
-                      ? "Đã chọn ảnh. Bạn có thể đổi ảnh khác hoặc xóa."
-                      : "Kéo thả ảnh vào đây, hoặc chọn tệp từ máy (JPG, PNG, WEBP · tối đa 500KB)."}
+                      ? "Image selected. You can change or remove it."
+                      : "Drag and drop an image here, or choose a file from your device (JPG, PNG, WEBP · larger images are auto-compressed to fit 500KB)."}
                   </span>
                   {imageError && (
                     <span className="upload-error" role="alert">
@@ -474,11 +641,11 @@ export default function Home() {
                       className="upload-button"
                       onClick={() => fileInputRef.current?.click()}
                     >
-                      <Upload size={15} /> {draft.image ? "Đổi ảnh" : "Chọn ảnh"}
+                      <Upload size={15} /> {draft.image ? "Change Image" : "Choose Image"}
                     </button>
                     {draft.image && (
                       <button type="button" className="upload-remove" onClick={removeDraftImage}>
-                        <Trash2 size={15} /> Xóa ảnh
+                        <Trash2 size={15} /> Remove Image
                       </button>
                     )}
                   </div>
@@ -493,16 +660,16 @@ export default function Home() {
               </div>
               <div className="form-grid">
                 <label className="wide">
-                  <span>Tên sản phẩm *</span>
+                  <span>Product Name *</span>
                   <input
                     required
                     value={draft.name}
                     onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-                    placeholder="Ví dụ: Bi-Xanh 03"
+                    placeholder="e.g.: Bi-Xanh 03"
                   />
                 </label>
                 <label>
-                  <span>Mã sản phẩm (NO)</span>
+                  <span>Product Code (NO)</span>
                   <input
                     value={draft.code}
                     onChange={(event) => setDraft({ ...draft, code: event.target.value })}
@@ -510,7 +677,7 @@ export default function Home() {
                   />
                 </label>
                 <label>
-                  <span>Loại *</span>
+                  <span>Category *</span>
                   <select
                     required
                     value={draft.category}
@@ -524,7 +691,7 @@ export default function Home() {
                   </select>
                 </label>
                 <label>
-                  <span>Giá bán *</span>
+                  <span>Sale Price *</span>
                   <input
                     required
                     value={draft.priceVnd}
@@ -533,7 +700,7 @@ export default function Home() {
                   />
                 </label>
                 <label>
-                  <span>Giá mua</span>
+                  <span>Cost Price</span>
                   <input
                     value={draft.originalPrice}
                     onChange={(event) => setDraft({ ...draft, originalPrice: event.target.value })}
@@ -557,10 +724,10 @@ export default function Home() {
             )}
             <div className="modal-actions">
               <button type="button" className="cancel" onClick={() => setEditorOpen(false)}>
-                Hủy
+                Cancel
               </button>
               <button className="save" type="submit" disabled={saving}>
-                <Check size={17} /> {saving ? "Đang lưu…" : editingId ? "Lưu thay đổi" : "Lưu sản phẩm"}
+                <Check size={17} /> {saving ? "Saving…" : editingId ? "Save Changes" : "Save Product"}
               </button>
             </div>
           </form>

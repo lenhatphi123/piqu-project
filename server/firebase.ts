@@ -2,10 +2,10 @@ import { cert, getApps, initializeApp, type App } from "firebase-admin/app";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
 
 /**
- * Khởi tạo Firebase Admin SDK từ biến môi trường (xem .env.example).
- * Hỗ trợ 2 cách cấu hình credential:
- * 1. FIREBASE_SERVICE_ACCOUNT: dán nguyên nội dung file JSON service account (khuyên dùng cho Vercel).
- * 2. FIREBASE_PROJECT_ID + FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY: 3 trường tách riêng.
+ * Initializes the Firebase Admin SDK from environment variables (see .env.example).
+ * Supports 2 credential configuration methods:
+ * 1. FIREBASE_SERVICE_ACCOUNT: paste the full service account JSON content (recommended for Vercel).
+ * 2. FIREBASE_PROJECT_ID + FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY: 3 separate fields.
  */
 function loadServiceAccount() {
   const jsonRaw = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -15,14 +15,14 @@ function loadServiceAccount() {
 
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  // Trên nhiều nền tảng (Vercel...), xuống dòng trong biến môi trường bị chuyển thành "\n" dạng chữ.
+  // On many platforms (Vercel, etc.), newlines in env vars get turned into literal "\n".
   const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n");
 
   if (!projectId || !clientEmail || !privateKey) {
     throw new Error(
-      "Thiếu cấu hình Firebase. Hãy đặt FIREBASE_SERVICE_ACCOUNT hoặc bộ 3 biến " +
-        "FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY trong .env. " +
-        "Xem hướng dẫn trong .env.example.",
+      "Missing Firebase configuration. Set FIREBASE_SERVICE_ACCOUNT or the trio " +
+        "FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY in .env. " +
+        "See .env.example for details.",
     );
   }
 
